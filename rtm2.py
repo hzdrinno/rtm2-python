@@ -3,13 +3,15 @@ import struct
 import logging
 import numpy as np
 from dataclasses import dataclass
+import threading    # for the optional RTM2Reader thread
+import queue        # for the optional RTM2Reader thread output
 
 """
 RTM2 Python Client Library
 
 Requires: Python 3.9+
 
-Users should import the RTM2 class.
+Users should import the `RTM2` class.
 The main interaction happens via non-blocking `write()` and polling `read()` calls of that class.
 
 Schematic example:
@@ -32,6 +34,9 @@ The library also contains helper functions intended for users:
 
 - `SwitState([], [], [], [])` allows formatting simple port function lists into switch matrix state integers
 - `Discover()` can be called to intercept UDP broadcast messages from available RTMs that don't have a live TCP connection
+
+The `RTM2Reader` class sets up a fully asynchronous reader thread. If this is used, users should not use the `read()` function
+of the main `RTM2` class anymore, but instead consume the output queue of `RTM2Reader`. See example3 for reference.
 """
 
 
@@ -162,7 +167,7 @@ def _puar_cmd():
 
 # --- Other helpers meant for user interaction ---
 
-def SwitState(SNSn: list, SNSp: list, DRVn: list, DRVp: list) -> int:
+def SwitState(DRVn: list, DRVp: list, SNSn: list, SNSp: list) -> int:
     """
     This function accepts four lists of numbers and outputs a single int number.
     Each list defines which BNC ports are to be connected to DRV-, DRV+, SNS-, SNS+, respectively.
@@ -185,13 +190,13 @@ def SwitState(SNSn: list, SNSp: list, DRVn: list, DRVp: list) -> int:
         else:
             raise ValueError(f"Invalid switch port: {n!r}. Expected integer 1..8.")
 
-    for n in SNSn:
-        assign_port(n, 0)
-    for n in SNSp:
-        assign_port(n, 8)
     for n in DRVn:
-        assign_port(n, 16)
+        assign_port(n, 0)
     for n in DRVp:
+        assign_port(n, 8)
+    for n in SNSn:
+        assign_port(n, 16)
+    for n in SNSp:
         assign_port(n, 24)
 
     return result
@@ -278,7 +283,7 @@ class RTM2:
         # Unsigned bytes
         'cmod': _struct_cmd('>B', int),
         'wfmd': _struct_cmd('>B', int),
-        'mod?': _struct_cmd('>B', int),
+        'mod?': _struct_cmd('>B', int), # This command isn't meant to be written. It is returned after some writes though.
         'amod': _struct_cmd('>B', int),
         'mult': _struct_cmd('>B', int),
         'refm': _struct_cmd('>B', int),
@@ -294,6 +299,7 @@ class RTM2:
         'trig': _empty_cmd(),
         'puls': _empty_cmd(),
         'gass': _empty_cmd(),
+        'cldt': _empty_cmd(),
         'srup': _empty_cmd(),
         'srdn': _empty_cmd(),
         'crup': _empty_cmd(),
@@ -509,7 +515,7 @@ class RTM2:
 
     # --- The main reader ---
     
-    def read(self) -> ReadResult:
+    def read(self, max_packets = 100) -> ReadResult:
         """
         Internally calls the reader helpers to formulate a response to clients.
 
@@ -531,10 +537,14 @@ class RTM2:
         - After getting the first message successfully, timeout is set to 0.0
         - This is done to make the function return faster, if any data was already found
         - The timeout is reset to its intended value before returning
+
+        `max_packets` provides a soft means to finish and not stay in an infinite loop,
+        in case the RTM sends a lot of updates very fast.
         """
         if not self._is_connected:
             raise ConnectionError("Cannot read from device: Not connected.")
 
+        packets = 0
         updates = []
         data = []
         raw_data = []
@@ -543,7 +553,7 @@ class RTM2:
         self.tcp.settimeout(self.timeout)
 
         try:
-            while True:
+            while packets < max_packets:
                 try:
                     packet = self._read_one_packet()
                     if packet is None:
@@ -563,6 +573,7 @@ class RTM2:
                         if content.size:
                             raw_data.append(content)
 
+                    packets += 1
                     # Set timeout to 0.0, after the first successful packet
                     self.tcp.settimeout(0.0)
 
@@ -590,3 +601,45 @@ class RTM2:
             raw_data = np.concatenate(raw_data).astype(np.float64) if raw_data else np.empty((0, 0)),
             error = error
         )
+    
+class RTM2Reader:
+    """
+    Owns one background thread that repeatedly calls `RTM2.read()`
+    and forwards non-empty results into a queue.
+    The use case is creating fully non-blocking main applications.
+
+    It takes an `RTM2` class instance as an argument.
+    """
+
+    def __init__(self, rtm: RTM2):
+        self.rtm = rtm
+        self.results: queue.Queue = queue.Queue()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run, name="rtm2-reader", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float | None = 2.0):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=timeout)
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            try:
+                result = self.rtm.read()
+
+                # Forward only meaningful results.
+                if result.updates or result.data.size or result.raw_data.size or result.error:
+                    self.results.put(result)
+
+            except Exception as exc:
+                # Push a synthetic error entry into the queue.
+                self.results.put(exc)
+                break

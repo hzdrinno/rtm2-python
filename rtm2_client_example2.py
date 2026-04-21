@@ -8,7 +8,7 @@ from rtm2 import RTM2, SwitState
 
 """
 This example shows the context-manager implementation.
-The with block first applies some config settings, flushes old data and then reads 
+The `with` block first applies some config settings, flushes old data and then reads 
 data as the measurement happens. It handles connection and disconnection implicitly.
 
 To be used with: Short encapsulated programs, where no connection to be RTM2 must
@@ -35,7 +35,7 @@ def data_plotter(device, period=2.0, runtime=60, col=17):
 
         while time.time() - t0 < runtime:
             device.write('newd')
-            time.sleep(period)
+            plt.pause(period)
             newdata = device.read().data
 
             if newdata.size:
@@ -87,8 +87,8 @@ if __name__ == '__main__':
         print(d)
         
         # 4. Run the data plotter
-        # Initialize the demo plotter to run for 30 s, updating every 1 s. 
+        # Initialize the demo plotter to run for 20 s, updating every 1 s. 
         # It will plot data column 3 which is "Voltage Output DC"
-        data_plotter(rtm, period=1.0, runtime=30, col=3)
+        data_plotter(rtm, period=1.0, runtime=20, col=3)
         
     print("Execution complete. Context Manager has safely disconnected the device.")

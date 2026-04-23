@@ -12,7 +12,7 @@ RTM2 Python Client Library
 Requires: Python 3.9+
 
 Users should import the `RTM2` class.
-The main interaction happens via non-blocking `write()` and polling `read()` calls of that class.
+The main interaction happens via non-blocking writes and polling reads of that class.
 
 Schematic example:
 

@@ -6,6 +6,15 @@ The source code in this repository is licensed under the Apache License 2.0. Tha
 
 Forks and derived works are welcome under the license terms, but modified versions must not be presented as the official vendor-supported package unless they are actually distributed by Tensor Instruments.
 
-### Repository structure
+### Repository contents
 
-The main python library is contained in `rtm2.py`. Other Python files are short examples for how users can integrate the functionalities into their programs.
+
+| File | Purpose|
+| --- | ---- |
+| `rtm2.py` | The main library file |
+| `rtm2_client_example1.py` | Basic instantiation, connecting, writing, reading, disconnecting |
+| `rtm2_client_example2.py` | Temporary instantiation and implicit connect/disconnect via Python's context management |
+| `rtm2_client_example3.py` | Separate reader thread for non-blocking main applications |
+| `rtm2_client_example4.py` | Different ways to write commands to the RTM2 |
+
+

@@ -9,12 +9,10 @@ Forks and derived works are welcome under the license terms, but modified versio
 ### Repository contents
 
 
-| File | Purpose|
-| --- | ---- |
-| `rtm2.py` | The main library file |
-| `rtm2_client_example1.py` | Basic instantiation, connecting, writing, reading, disconnecting |
-| `rtm2_client_example2.py` | Temporary instantiation and implicit connect/disconnect via Python's context management |
-| `rtm2_client_example3.py` | Separate reader thread for non-blocking main applications |
-| `rtm2_client_example4.py` | Different ways to write commands to the RTM2 |
-
+| File | Purpose |
+| --- | --- |
+| `rtm2.py` | Main RTM2 Python client library |
+| `basic_connection_read_until.py` | Basic long-lived connection pattern: instantiate, connect, write commands, use `read_until()`, and disconnect explicitly |
+| `context_manager_commands.py` | Short-script pattern using `with RTM2(...) as rtm`; demonstrates `send()`, `write()`, `.cmd.*()`, and `read_until()` |
+| `threaded_reader_live_plot.py` | Threaded application-style example with `RTM2Reader`, non-blocking main loop, live plotting, state display, and interactive command input |
 

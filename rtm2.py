@@ -1,3 +1,4 @@
+import time
 import socket
 import struct
 import logging
@@ -5,6 +6,7 @@ import numpy as np
 from dataclasses import dataclass
 import threading    # for the optional RTM2Reader thread
 import queue        # for the optional RTM2Reader thread output
+
 
 """
 RTM2 Python Client Library
@@ -432,12 +434,18 @@ class RTM2:
             payload = cmd_def["encode"](pars)
 
             packagesize = struct.pack('>i', len(payload) + 4)
-            self.tcp.sendall(packagesize + cmd.encode('ascii') + payload)
+            packet = packagesize + cmd.encode('ascii') + payload
+            self.tcp.sendall(packet)
 
         except (ValueError, IndexError) as e:
             logger.warning(f"Parameter parsing error for '{cmd}' -> {pars}: {e}")
         except struct.error as e:
             logger.warning(f"Struct packing error: {e}")
+        except BlockingIOError as e:
+            logger.warning(f"Socket temporarily not writable. Could not send '{cmd}' -> {pars}: {e}")
+        except OSError as e:
+            self._is_connected = False
+            logger.error(f"Socket error while sending '{cmd}' -> {pars}: {e}")
 
     def write(self, usrstr: str):
         """
@@ -630,21 +638,29 @@ class RTM2:
                     self.tcp.settimeout(0.0)
 
                 except PacketFramingError as e:
-                    if error is None:
-                        error = f"{e} -> Packet framing lost. Flushing receive buffer."
-                    self._flush_rx_buffer()
+                    frame_error = f"{e} -> Packet framing lost. Flushing receive buffer."
+                    error = f"{error} Additionally: {frame_error}" if error else frame_error
+                    try:
+                        self._flush_rx_buffer()
+                    except OSError as flush_error:
+                        self._is_connected = False
+                        error = f"{error} Additionally, socket error while flushing receive buffer: {flush_error}"
                     break
                 except (socket.timeout, BlockingIOError):
                     # This is the default exit mode. Thrown by _read_one_packet()
                     break
-                except OSError:
+                except OSError as e:
+                    self._is_connected = False
+                    socket_error = f"Socket error while reading: {e}"
+                    error = f"{error} Additionally: {socket_error}" if error else socket_error
+                    logger.error(error)
                     break
 
         # Reset timeout to default, in case it was set to 0.0 before
         finally:
             try:
                 self.tcp.settimeout(self.timeout)
-            except OSError:
+            except (AttributeError, OSError):
                 pass
 
         return ReadResult(
@@ -653,7 +669,169 @@ class RTM2:
             raw_data = np.concatenate(raw_data).astype(np.float64) if raw_data else np.empty((0, 0)),
             error = error
         )
+
     
+    def read_until(self, *terms: str, timeout: float = 10.0, listen: float = 0.0, send=None) -> ReadResult:
+        """
+        Repeatedly call `read()` until selected reply content appears and the
+        minimum listen time has passed, an error occurs, or the outer timeout expires.
+
+        This is a blocking convenience wrapper around the normal asynchronous RTM2
+        communication model. It does not create a strict write/read transaction.
+
+        Examples:
+
+            rtm.read_until()
+            rtm.read_until("updates")
+            rtm.read_until("data", send="newd")
+            rtm.read_until("updates", send="gass")
+            rtm.read_until("vodc", send="vodc 0.05")
+            rtm.read_until("vodc", send=("vodc", 0.05))
+            rtm.read_until("vorg", listen=0.1)
+
+        Matching terms:
+
+            "any" / no terms  -> match any update, data, raw_data, or error
+            "updates"         -> match any state update
+            "data"            -> match data rows
+            "raw_data"/"raw"  -> match raw data rows
+            "error"           -> match an error
+            other strings      -> interpreted as state-update command names, e.g. "vodc"
+
+        `timeout` is the maximum total blocking time.
+
+        `listen` is a minimum accumulation time counted from the start of the function,
+        not from the first match. The normal successful exit condition is therefore:
+
+            selected content has been seen AND listen seconds have passed
+
+        If timeout is shorter than listen, timeout takes priority.
+
+        All results obtained while waiting are accumulated and returned, including
+        non-matching intermediate updates.
+
+        The optional `send=` argument sends one command before waiting:
+
+            send=None              -> do not send first
+            send="newd"            -> calls self.write("newd")
+            send="vodc 0.05"       -> calls self.write("vodc 0.05")
+            send=("vodc", 0.05)    -> calls self.send("vodc", 0.05)
+        """
+        if not self._is_connected:
+            raise ConnectionError("Cannot read from device: Not connected.")
+
+        if timeout < 0:
+            raise ValueError("timeout must be non-negative.")
+        if listen < 0:
+            raise ValueError("listen must be non-negative.")
+
+        # Optional write-before-wait step. This keeps simple no-argument commands
+        # free from Python's single-item tuple comma trap: send="gass", not send=("gass",).
+        if send is not None:
+            if isinstance(send, str):
+                self.write(send)
+            elif isinstance(send, (tuple, list)):
+                if not send:
+                    raise ValueError("send= tuple/list must contain at least a command name.")
+                self.send(*send)
+            else:
+                raise TypeError("send= must be None, a command string, or a tuple/list for self.send().")
+
+        # No terms means: match anything meaningful.
+        wanted = {str(term).lower() for term in terms} if terms else {"any"}
+
+        component_terms = {"any", "update", "updates", "data", "raw", "raw_data", "error"}
+        wanted_components = wanted & component_terms
+        wanted_parameters = wanted - component_terms
+
+        def result_matches(result: ReadResult) -> bool:
+            if result.error:
+                # Errors always count as a match, so read_until() can return promptly.
+                return True
+
+            if "any" in wanted_components:
+                return bool(result.updates or result.data.size or result.raw_data.size)
+
+            if {"update", "updates"} & wanted_components and result.updates:
+                return True
+
+            if "data" in wanted_components and result.data.size:
+                return True
+
+            if {"raw", "raw_data"} & wanted_components and result.raw_data.size:
+                return True
+
+            if "error" in wanted_components and result.error:
+                return True
+
+            if wanted_parameters:
+                return any(upd.parameter in wanted_parameters for upd in result.updates)
+
+            return False
+
+        updates = []
+        data = []
+        raw_data = []
+        error = None
+        matched = False
+
+        start = time.monotonic()
+        timeout_deadline = start + timeout
+        listen_deadline = start + listen
+
+        old_timeout = self.timeout
+
+        try:
+            while True:
+                remaining = timeout_deadline - time.monotonic()
+
+                if remaining <= 0:
+                    break
+
+                # The outer timeout must take priority over the socket timeout.
+                if remaining < old_timeout:
+                    self.timeout = remaining
+
+                result = self.read()
+
+                if result.updates:
+                    updates.extend(result.updates)
+
+                if result.data.size:
+                    data.append(result.data)
+
+                if result.raw_data.size:
+                    raw_data.append(result.raw_data)
+
+                if error is None and result.error:
+                    error = result.error
+
+                if result_matches(result):
+                    matched = True
+
+                # Errors are exceptional transport/protocol conditions. Return promptly,
+                # even if the minimum listen time has not elapsed.
+                if result.error:
+                    break
+
+                if matched and time.monotonic() >= listen_deadline:
+                    break
+
+        finally:
+            self.timeout = old_timeout
+            try:
+                self.tcp.settimeout(old_timeout)
+            except (AttributeError, OSError):
+                pass
+
+        return ReadResult(
+            updates=updates,
+            data=np.concatenate(data) if data else np.empty((0, 0)),
+            raw_data=np.concatenate(raw_data) if raw_data else np.empty((0, 0)),
+            error=error,
+        )
+
+
 class RTM2Reader:
     """
     Owns one background thread that repeatedly calls `RTM2.read()`

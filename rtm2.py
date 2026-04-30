@@ -1,12 +1,14 @@
-import time
 import socket
 import struct
 import logging
+import time
 import numpy as np
 from dataclasses import dataclass
 import threading    # for the optional RTM2Reader thread
 import queue        # for the optional RTM2Reader thread output
 
+
+__version__ = "1.1.0"
 
 """
 RTM2 Python Client Library
@@ -37,8 +39,8 @@ The library also contains helper functions intended for users:
 - `SwitState([], [], [], [])` allows formatting simple port function lists into switch matrix state integers
 - `Discover()` can be called to intercept UDP broadcast messages from available RTMs that don't have a live TCP connection
 
-The `RTM2Reader` class sets up a fully asynchronous reader thread. If this is used, users should not use the `read()` function
-of the main `RTM2` class anymore, but instead consume the output queue of `RTM2Reader`. See example3 for reference.
+The `RTM2Reader` class sets up a fully asynchronous reader thread. If this is used, users should not use the `read()` or
+`read_until()` function of the main `RTM2` class anymore, but instead consume the output queue of `RTM2Reader`.
 """
 
 
@@ -61,7 +63,7 @@ class ReadResult:
     - `read().updates` contains a list of incremental setting updates.
     - `read().data` is a 2D NumPy array, rows representing time.
     - `read().raw_data` is a 2D NumPy array, rows representing time.
-    - `read.error` is `None` or a string explaining the error
+    - `read().error` is `None` or a string explaining the error
     """
     updates: list[StateUpdate]
     data: np.ndarray
@@ -73,6 +75,7 @@ class PacketFramingError(Exception):
     """Raised when packet framing or structural packet integrity is lost."""
     pass
 
+
 class _CmdFacade:
     """
     Empty namespace to be used in the method auto-generator. Check `RTM2._build_cmd_facade()`
@@ -80,99 +83,98 @@ class _CmdFacade:
     """
     pass
 
-# --- Command encoding/decoding helpers ---
 
-# --- Regular single-parameter states ---
-def _struct_cmd(fmt, cast_type): 
-    return {
-        "encode": lambda args: struct.pack(fmt, cast_type(args[0])),
-        "decode": lambda payload: struct.unpack(fmt, payload)[0],
-        "type": "state",
-    }
+# --- Generic command payload encoding/decoding helpers ---
 
-# --- Rampable parameters states: 1 or 2 Double, returns 1 Double ---
-def _ramp_cmd():
-    def encode(args):
-        if len(args) == 1:
-            return struct.pack(">d", float(args[0]))
-        elif len(args) == 2:
-            return struct.pack(">2d", float(args[0]), float(args[1]))
-        else:
-            raise ValueError("Expected 1 or 2 double arguments.")
+_STRUCT_CASTS = {
+    "d": float,
+    "B": int,
+    "i": int,
+    "I": int,
+}
 
-    return {
-        "encode": encode,
-        "decode": lambda payload: struct.unpack(">d", payload)[0],
-        "type": "state",
-    }
 
-# --- parameter-less state commands ---
-def _empty_cmd():
-    return {
-        "encode": lambda args: b'',
-        "decode": lambda payload: True,  # Returns True to indicate successful state update/acknowledgment without payload
-        "type": "state",
-    }
+def _encode_payload(fmt, args: tuple) -> bytes:
+    """
+    Encode a command payload from a compact declarative format.
 
-# --- Data stream commands: returns parsed independently ---
-def _stream_cmd():
-    return {
-        "encode": lambda args: b'',
-        "decode": None,
-        "type": "data",
-    }
+    Supported formats:
+        ""          -> empty payload, requires no args
+        ">d", ">i"  -> regular struct formats
+        ">dd"       -> two doubles; if one arg is supplied, the second becomes 0.0
+        [">I"]      -> counted sequence; count is sent as >i followed by all values
+    """
+    if fmt == "":
+        if args:
+            raise ValueError(f"Expected 0 arguments, got {len(args)}.")
+        return b""
 
-# --- "rawd" Raw Data streams: Sent with an integer, returns parsed independently
-def _raw_stream_cmd():
-    return {
-        "encode": lambda args: struct.pack('>i', int(args[0])),
-        "decode": None,
-        "type": "raw_data",
-    }
+    if isinstance(fmt, list):
+        field = [char for char in fmt[0] if char in _STRUCT_CASTS][0]
+        values = [_STRUCT_CASTS[field](arg) for arg in args]
+        count = len(values)
+        return struct.pack(">i", count) + struct.pack(f">{count}{field}", *values)
 
-# --- "dioN" command handling: 1 Uint8 + 1 Double ---    
-def _dio_cmd():
-    return {
-        "encode": lambda args: struct.pack(">Bd", int(args[0]), float(args[1])),
-        "decode": lambda payload: struct.unpack(">Bd", payload),
-        "type": "state",
-    }
+    # Regular struct payload.
+    fields = [char for char in fmt if char in _STRUCT_CASTS]
 
-# --- "swit" command handling: variable length Uint32 arrays ---    
-def _swit_cmd():
-    def encode(args):
-        pars = [int(x) for x in args]
-        return struct.pack(">i", len(pars)) + struct.pack(f">{len(pars)}I", *pars)
-        
-    def decode(payload):
+    # RTM2 rampable setpoints are encoded as two doubles. The second argument is
+    # optional for user convenience and defaults to 0.0, matching firmware behavior.
+    if fmt == ">dd" and len(args) == 1:
+        args = (args[0], 0.0)
+
+    if len(args) != len(fields):
+        raise ValueError(f"Expected {len(fields)} arguments for {fmt}, got {len(args)}.")
+
+    values = [_STRUCT_CASTS[field](arg) for field, arg in zip(fields, args)]
+    return struct.pack(fmt, *values)
+
+
+def _decode_payload(fmt, payload: bytes):
+    """
+    Decode a reply payload from a compact declarative format.
+
+    Supported formats:
+        ""          -> acknowledged, but no cacheable state value; returns None
+        ">d", ">i"  -> regular struct formats
+        [">I"]      -> counted sequence; returns a tuple
+        "data"      -> rows/cols header followed by big-endian doubles; returns a 2D NumPy array
+    """
+    if fmt == "":
+        return None
+
+    if fmt == "data":
+        if len(payload) < 8:
+            raise ValueError("Data payload is too short to contain rows/cols header.")
+
+        rows, cols = struct.unpack(">ii", payload[:8])
+        expected_len = 8 + rows * cols * 8
+        if len(payload) != expected_len:
+            raise ValueError(f"Data payload length mismatch: expected {expected_len}, got {len(payload)}.")
+
+        return np.frombuffer(payload[8:], dtype=">d").reshape((rows, cols))
+
+    if isinstance(fmt, list):
+        field = [char for char in fmt[0] if char in _STRUCT_CASTS][0]
+        item_fmt = fmt[0]
+
+        if len(payload) < 4:
+            raise ValueError("Sequence payload is too short to contain a count field.")
+
         count = struct.unpack(">i", payload[:4])[0]
-        return struct.unpack(f">{count}I", payload[4:])
-        
-    return {"encode": encode, "decode": decode, "type": "state"}
+        expected_len = 4 + count * struct.calcsize(item_fmt)
+        if len(payload) != expected_len:
+            raise ValueError(f"Sequence payload length mismatch: expected {expected_len}, got {len(payload)}.")
 
-# --- "selc" command handling: variable length Int32 arrays ---    
-def _selc_cmd():
-    def encode(args):
-        pars = [int(x) for x in args]
-        return struct.pack(">i", len(pars)) + struct.pack(f">{len(pars)}i", *pars)
-        
-    def decode(payload):
-        count = struct.unpack(">i", payload[:4])[0]
-        return struct.unpack(f">{count}i", payload[4:])
-        
-    return {"encode": encode, "decode": decode, "type": "state"}
+        return struct.unpack(f">{count}{field}", payload[4:])
 
-# --- "puar" command handling: variable length Double arrays ---    
-def _puar_cmd():
-    def encode(args):
-        pars = [float(x) for x in args]
-        return struct.pack(">i", len(pars)) + struct.pack(f">{len(pars)}d", *pars)
-        
-    def decode(payload):
-        count = struct.unpack(">i", payload[:4])[0]
-        return struct.unpack(f">{count}d", payload[4:])
-        
-    return {"encode": encode, "decode": decode, "type": "state"}
+    expected_len = struct.calcsize(fmt)
+    if len(payload) != expected_len:
+        raise ValueError(f"Struct payload length mismatch for {fmt}: expected {expected_len}, got {len(payload)}.")
+
+    values = struct.unpack(fmt, payload)
+    return values[0] if len(values) == 1 else values
+
 
 # --- Other helpers meant for user interaction ---
 
@@ -210,6 +212,7 @@ def SwitState(DRVn: list, DRVp: list, SNSn: list, SNSp: list) -> int:
 
     return result
 
+
 def Discover(
     timeout: float = 12.0,
     primer_addr: str | None = None,
@@ -237,7 +240,7 @@ def Discover(
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         sock.settimeout(timeout)
-        sock.bind(('', 61557))
+        sock.bind(("", 61557))
         
         for addr in targets:
             sock.sendto(b"UDP broadcast receive primer", (addr, primer_port))
@@ -245,9 +248,10 @@ def Discover(
 
         try:
             payload, sender = sock.recvfrom(1024)
-            return (payload.decode('ascii'), sender[0]) if b'RTM2' in payload else None
+            return (payload.decode("ascii"), sender[0]) if b"RTM2" in payload else None
         except socket.timeout:
             return None
+
 
 # --- The main class ---
 
@@ -259,6 +263,9 @@ class RTM2:
     actually known device settings. This dictionary is automatically updated
     each time the `read()` function is called based on the `StateUpdates` it
     returns. Can be accessed via the `get_state()` function.
+
+    Commands that acknowledge receipt without returning a value are included in
+    `ReadResult.updates` with value `None`, but are not cached in `_state`.
 
     The class also holds the TCP connection settings. The default timeout is
     1.0 seconds. If a snappier timeout is preferred, it should be supplied
@@ -274,7 +281,9 @@ class RTM2:
     While all of the writing/commanding functions are fire-and-forget functions,
     `read()` is an independent polling function that will always attempt to deplete
     the entire TCP buffer. It will only return after finding at least one full RTM2
-    reply in the TCP buffer or after TCP timeout. 
+    reply in the TCP buffer or after TCP timeout.
+
+    `read_until()` is a blocking convenience wrapper around `read()`.
 
     Generally, a continuous TCP connection is preferred. Context-manager
     support is provided and is useful for e.g. one-time configuration bursts. 
@@ -282,72 +291,82 @@ class RTM2:
     
     # --- Central command registry ---
     #
-    # Each command is mapped to a handler defining:
-    #   - encoding of arguments
-    #   - decoding of replies
-    #   - command type classification
-    #     (the above three are usually combined in a helper function)
-    #   - a docstring for autogenerated wrapper functions
+    # Each command defines:
+    #   - args: outgoing payload format
+    #   - reply: incoming payload format
+    #   - type: state, data, or raw_data
+    #   - doc: docstring for autogenerated wrapper functions
+    #
+    # Format entries:
+    #   ""       -> empty payload / acknowledgment
+    #   ">d"     -> regular struct format
+    #   ">dd"    -> two doubles; one user argument is accepted and padded with 0.0
+    #   [">I"]   -> counted sequence, encoded as count (>i) followed by values
+    #   "data"   -> rows/cols header followed by big-endian doubles
+
 
     _COMMANDS = {
         # Doubles
-        'avgt': {**_struct_cmd('>d', float), 'doc': 'Set Averaging Time.'},
-        'cpro': {**_struct_cmd('>d', float), 'doc': 'Set Current Limit.'},
-        'ipro': {**_struct_cmd('>d', float), 'doc': 'Set Current Limit.'},
-        'vpro': {**_struct_cmd('>d', float), 'doc': 'Set Output Voltage Limit.'},
-        'lfrq': {**_struct_cmd('>d', float), 'doc': 'Set AC Frequency.'},
-        'sres': {**_struct_cmd('>d', float), 'doc': 'Set Series Resistance. Negative values enable auto-selection.'},
-        'crng': {**_struct_cmd('>d', float), 'doc': 'Set Current measurement range. Negative values enable auto-selection.'},
-        'vorg': {**_struct_cmd('>d', float), 'doc': 'Set Output Voltage measurement range. Negative values enable auto-selection.'},
-        'virg': {**_struct_cmd('>d', float), 'doc': 'Set Input Voltage measurement range. Negative values enable auto-selection.'},
-        'phsh': {**_struct_cmd('>d', float), 'doc': 'Set AC Phase Shift from Reference Input'},
-        'time': {**_struct_cmd('>d', float), 'doc': "Request the timestamp difference between the provided timestamp and the RTM2's internal one."}, 
+        "avgt": {"args":  ">d",   "reply": ">d",   "type": "state",    "doc": "Set Averaging Time."},
+        "cpro": {"args":  ">d",   "reply": ">d",   "type": "state",    "doc": "Set Current Limit."},
+        "ipro": {"args":  ">d",   "reply": ">d",   "type": "state",    "doc": "Set Current Limit."},
+        "vpro": {"args":  ">d",   "reply": ">d",   "type": "state",    "doc": "Set Output Voltage Limit."},
+        "lfrq": {"args":  ">d",   "reply": ">d",   "type": "state",    "doc": "Set AC Frequency."},
+        "sres": {"args":  ">d",   "reply": ">d",   "type": "state",    "doc": "Set Series Resistance. Negative values enable auto-selection."},
+        "crng": {"args":  ">d",   "reply": ">d",   "type": "state",    "doc": "Set Current measurement range. Negative values enable auto-selection."},
+        "vorg": {"args":  ">d",   "reply": ">d",   "type": "state",    "doc": "Set Output Voltage measurement range. Negative values enable auto-selection."},
+        "virg": {"args":  ">d",   "reply": ">d",   "type": "state",    "doc": "Set Input Voltage measurement range. Negative values enable auto-selection."},
+        "phsh": {"args":  ">d",   "reply": ">d",   "type": "state",    "doc": "Set AC Phase Shift from Reference Input."},
+        "time": {"args":  ">d",   "reply": ">d",   "type": "state",    "doc": "Request the timestamp difference between the provided timestamp and the RTM2's internal one."},
 
         # Unsigned bytes
-        'cmod': {**_struct_cmd('>B', int), 'doc': 'Set Output Control Mode.'},
-        'wfmd': {**_struct_cmd('>B', int), 'doc': 'Set Waveform Mode.'},
-        'modq': {**_struct_cmd('>B', int), 'doc': 'Detected Analysis Mode.'},  # not meant to be sent, only received
-        'amod': {**_struct_cmd('>B', int), 'doc': 'Set Analysis Mode.'},
-        'mult': {**_struct_cmd('>B', int), 'doc': 'Set Multisample Mode.'},
-        'refm': {**_struct_cmd('>B', int), 'doc': 'Set Reference Multiplexer Input.'},
-        'phlk': {**_struct_cmd('>B', int), 'doc': 'Set Phase Locking Behavior.'},
-        'snsa': {**_struct_cmd('>B', int), 'doc': 'Set SNS preamplifier Mode.'},
-        'coax': {**_struct_cmd('>B', int), 'doc': 'Set BNC Coax Mode.'},
-        'drvp': {**_struct_cmd('>B', int), 'doc': 'Set Drive Polarity Mode.'},
+        "cmod": {"args":  ">B",   "reply": ">B",   "type": "state",    "doc": "Set Output Control Mode."},
+        "wfmd": {"args":  ">B",   "reply": ">B",   "type": "state",    "doc": "Set Waveform Mode."},
+        "modq": {"args":  ">B",   "reply": ">B",   "type": "state",    "doc": "Detected Analysis Mode."},  # not meant to be sent, only received
+        "amod": {"args":  ">B",   "reply": ">B",   "type": "state",    "doc": "Set Analysis Mode."},
+        "mult": {"args":  ">B",   "reply": ">B",   "type": "state",    "doc": "Set Multisample Mode."},
+        "refm": {"args":  ">B",   "reply": ">B",   "type": "state",    "doc": "Set Reference Multiplexer Input."},
+        "phlk": {"args":  ">B",   "reply": ">B",   "type": "state",    "doc": "Set Phase Locking Behavior."},
+        "snsa": {"args":  ">B",   "reply": ">B",   "type": "state",    "doc": "Set SNS preamplifier Mode."},
+        "coax": {"args":  ">B",   "reply": ">B",   "type": "state",    "doc": "Set BNC Coax Mode."},
+        "drvp": {"args":  ">B",   "reply": ">B",   "type": "state",    "doc": "Set Drive Polarity Mode."},
 
         # Integers
-        'meas': {**_struct_cmd('>i', int), 'doc': 'Set Data sample counter. Negative values enable infinite sampling.'},
+        "meas": {"args":  ">i",   "reply": ">i",   "type": "state",    "doc": "Set Data sample counter. Negative values enable infinite sampling."},
 
-        # Parameter-less state commands
-        'trig': {**_empty_cmd(), 'doc': 'Begin a new demodulation window immediately.'},
-        'puls': {**_empty_cmd(), 'doc': 'Begin the pulse train (or arbitrary waveform) generation.'},
-        'gass': {**_empty_cmd(), 'doc': 'Request all device settings.'},
-        'cldt': {**_empty_cmd(), 'doc': 'Clear device side data buffer.'},
-        'srup': {**_empty_cmd(), 'doc': 'Series Resistance Up.'},
-        'srdn': {**_empty_cmd(), 'doc': 'Series Resistance Down.'},
-        'crup': {**_empty_cmd(), 'doc': 'Current measurement range Up.'},
-        'crdn': {**_empty_cmd(), 'doc': 'Current measurement range Down.'},
-        'voru': {**_empty_cmd(), 'doc': 'Voltage Output measurement range Up.'},
-        'vord': {**_empty_cmd(), 'doc': 'Voltage Output measurement range Down.'},
-        'viru': {**_empty_cmd(), 'doc': 'Voltage Input measurement range Up.'},
-        'vird': {**_empty_cmd(), 'doc': 'Voltage Input measurement range Down.'},
+        # Parameter-less acknowledgment commands
+        "trig": {"args":  "",     "reply": "",     "type": "state",    "doc": "Begin a new demodulation window immediately."},
+        "puls": {"args":  "",     "reply": "",     "type": "state",    "doc": "Begin the pulse train (or arbitrary waveform) generation."},
+        "gass": {"args":  "",     "reply": "",     "type": "state",    "doc": "Request all device settings."},
+        "cldt": {"args":  "",     "reply": "",     "type": "state",    "doc": "Clear device side data buffer."},
+        "srup": {"args":  "",     "reply": "",     "type": "state",    "doc": "Series Resistance Up."},
+        "srdn": {"args":  "",     "reply": "",     "type": "state",    "doc": "Series Resistance Down."},
+        "crup": {"args":  "",     "reply": "",     "type": "state",    "doc": "Current measurement range Up."},
+        "crdn": {"args":  "",     "reply": "",     "type": "state",    "doc": "Current measurement range Down."},
+        "voru": {"args":  "",     "reply": "",     "type": "state",    "doc": "Voltage Output measurement range Up."},
+        "vord": {"args":  "",     "reply": "",     "type": "state",    "doc": "Voltage Output measurement range Down."},
+        "viru": {"args":  "",     "reply": "",     "type": "state",    "doc": "Voltage Input measurement range Up."},
+        "vird": {"args":  "",     "reply": "",     "type": "state",    "doc": "Voltage Input measurement range Down."},
 
-        # Special structured
-        'camp': {**_ramp_cmd(), 'doc': 'Set Current Amplitude setpoint. Optional 2nd argument: Time to arrival.'},
-        'cudc': {**_ramp_cmd(), 'doc': 'Set Current DC setpoint. Optional 2nd argument: Time to arrival.'},
-        'vamp': {**_ramp_cmd(), 'doc': 'Set Voltage Amplitude setpoint. Optional 2nd argument: Time to arrival.'},
-        'vodc': {**_ramp_cmd(), 'doc': 'Set Voltage DC setpoint. Optional 2nd argument: Time to arrival.'},
-        'dio0': {**_dio_cmd(), 'doc': 'Set DIO0 mode.'},
-        'dio1': {**_dio_cmd(), 'doc': 'Set DIO1 mode.'},
-        'swit': {**_swit_cmd(), 'doc': 'Define Switch Matrix states.'},
-        'selc': {**_selc_cmd(), 'doc': 'Set indices of data channels that will be sent as reply to `newd` calls.'},
-        'puar': {**_puar_cmd(), 'doc': 'Set pulse parameter array entries.'},
+        # Rampable parameters: 1 or 2 user args, encoded as 2 doubles, replies as 1 double
+        "camp": {"args":  ">dd",  "reply": ">d",   "type": "state",    "doc": "Set Current Amplitude setpoint. Optional 2nd argument: Time to arrival."},
+        "cudc": {"args":  ">dd",  "reply": ">d",   "type": "state",    "doc": "Set Current DC setpoint. Optional 2nd argument: Time to arrival."},
+        "vamp": {"args":  ">dd",  "reply": ">d",   "type": "state",    "doc": "Set Voltage Amplitude setpoint. Optional 2nd argument: Time to arrival."},
+        "vodc": {"args":  ">dd",  "reply": ">d",   "type": "state",    "doc": "Set Voltage DC setpoint. Optional 2nd argument: Time to arrival."},
+
+        # Special structured commands
+        "dio0": {"args":  ">Bd",  "reply": ">Bd",  "type": "state",    "doc": "Set DIO0 mode."},
+        "dio1": {"args":  ">Bd",  "reply": ">Bd",  "type": "state",    "doc": "Set DIO1 mode."},
+        "swit": {"args": [">I"],  "reply": [">I"], "type": "state",    "doc": "Define Switch Matrix states."},
+        "selc": {"args": [">i"],  "reply": [">i"], "type": "state",    "doc": "Set indices of data channels that will be sent as reply to `newd` calls."},
+        "puar": {"args": [">d"],  "reply": [">d"], "type": "state",    "doc": "Set pulse parameter array entries."},
 
         # Data commands
-        'newd': {**_stream_cmd(), 'doc': 'Request all new data rows, i.e. previously unsent rows.'},
-        'alld': {**_stream_cmd(), 'doc': 'Request all data rows.'},
-        'rawd': {**_raw_stream_cmd(), 'doc': 'Request a number of rows of raw ADC samples.'},
+        "newd": {"args":  "",     "reply": "data", "type": "data",     "doc": "Request all new data rows, i.e. previously unsent rows."},
+        "alld": {"args":  "",     "reply": "data", "type": "data",     "doc": "Request all data rows."},
+        "rawd": {"args":  ">i",   "reply": "data", "type": "raw_data", "doc": "Request a number of rows of raw ADC samples."},
     }
+
 
     def __init__(self, host: str, port: int, timeout: float = 1.0):
         self.host = host
@@ -431,17 +450,21 @@ class RTM2:
                 logger.warning(f"Unknown command: {cmd}")
                 return
 
-            payload = cmd_def["encode"](pars)
+            payload = _encode_payload(cmd_def["args"], pars)
+            packagesize = struct.pack(">i", len(payload) + 4)
+            packet = packagesize + cmd.encode("ascii") + payload
 
-            packagesize = struct.pack('>i', len(payload) + 4)
-            packet = packagesize + cmd.encode('ascii') + payload
             self.tcp.sendall(packet)
 
         except (ValueError, IndexError) as e:
             logger.warning(f"Parameter parsing error for '{cmd}' -> {pars}: {e}")
         except struct.error as e:
-            logger.warning(f"Struct packing error: {e}")
+            logger.warning(f"Struct packing error for '{cmd}' -> {pars}: {e}")
         except BlockingIOError as e:
+            # sendall() may rarely see the socket's transient non-blocking state
+            # while read() is depleting the receive buffer. Retrying the whole
+            # packet is avoided because sendall() may already have sent a prefix.
+            # Observe, if this happens at a non-negligible scale.
             logger.warning(f"Socket temporarily not writable. Could not send '{cmd}' -> {pars}: {e}")
         except OSError as e:
             self._is_connected = False
@@ -523,7 +546,7 @@ class RTM2:
                 return None
 
             header = first_byte + rest_header
-            payload_size = struct.unpack('>i', header)[0] - 4
+            payload_size = struct.unpack(">i", header)[0] - 4
 
             cmd_bytes = self._recv_exact(4)
             if cmd_bytes is None:
@@ -544,7 +567,7 @@ class RTM2:
         Takes in command and payload of one reply.
         Returns a tuple of three items:
         
-        - the reply type: `"state"`, `"data"`, `"raw_data"` or `None`
+        - the reply `"type"`: `"state"`, `"data"`, `"raw_data"` or `None`
         - the corresponding data/values or `None`
         - an error string or `None`
         """
@@ -553,25 +576,24 @@ class RTM2:
         if not cmd_def:
             return None, None, f"Unknown incoming command: {cmd}"
 
-        if cmd_def["type"] == "state":
-            try:
-                val = cmd_def["decode"](payload)
-                return "state", StateUpdate(cmd, val), None
-            except Exception:
-                return None, None, f"Decode error for command {cmd}"
+        packet_type = cmd_def["type"]
 
-        # Process standard and raw data streams directly via NumPy mapping
-        elif cmd_def["type"] in ("data", "raw_data"):
-            try:
-                rows, cols = struct.unpack('>ii', payload[:8])
-                data = np.frombuffer(payload[8:], dtype='>d').reshape((rows, cols))
-                return cmd_def["type"], data, None
-            except (struct.error, ValueError) as e:
+        try:
+            content = _decode_payload(cmd_def["reply"], payload)
+        except Exception as e:
+            if packet_type in {"data", "raw_data"}:
                 raise PacketFramingError(
-                    f"Malformed {cmd_def['type']} packet for command {cmd}"
+                    f"Malformed {packet_type} packet for command {cmd}"
                 ) from e
+            return None, None, f"Decode error for command {cmd}"
 
-        return None, None, f"Unsupported packet type: {cmd_def['type']}"
+        if packet_type == "state":
+            return "state", StateUpdate(cmd, content), None
+
+        if packet_type in {"data", "raw_data"}:
+            return packet_type, content, None
+
+        return None, None, f"Unsupported packet type: {packet_type}"
 
     # --- The main reader ---
     
@@ -599,7 +621,7 @@ class RTM2:
         - The timeout is reset to its intended value before returning
 
         `max_packets` provides a soft means to finish and not stay in an infinite loop,
-        in case the RTM sends a lot of updates very fast.
+        in case the RTM2 sends a lot of updates very fast.
         """
         if not self._is_connected:
             raise ConnectionError("Cannot read from device: Not connected.")
@@ -624,8 +646,9 @@ class RTM2:
                         error = parse_error
 
                     if packet_type == "state":
-                        self._state[content.parameter] = content.value
                         updates.append(content)
+                        if content.value is not None:
+                            self._state[content.parameter] = content.value
                     elif packet_type == "data":
                         if content.size:
                             data.append(content)
@@ -670,7 +693,6 @@ class RTM2:
             error = error
         )
 
-    
     def read_until(self, *terms: str, timeout: float = 10.0, listen: float = 0.0, send=None) -> ReadResult:
         """
         Repeatedly call `read()` until selected reply content appears and the
@@ -680,7 +702,7 @@ class RTM2:
         communication model. It does not create a strict write/read transaction.
 
         Examples:
-
+        ```
             rtm.read_until()
             rtm.read_until("updates")
             rtm.read_until("data", send="newd")
@@ -688,7 +710,7 @@ class RTM2:
             rtm.read_until("vodc", send="vodc 0.05")
             rtm.read_until("vodc", send=("vodc", 0.05))
             rtm.read_until("vorg", listen=0.1)
-
+        ```
         Matching terms:
 
             "any" / no terms  -> match any update, data, raw_data, or error
@@ -696,7 +718,7 @@ class RTM2:
             "data"            -> match data rows
             "raw_data"/"raw"  -> match raw data rows
             "error"           -> match an error
-            other strings      -> interpreted as state-update command names, e.g. "vodc"
+            other strings     -> interpreted as state-update command names, e.g. "vodc"
 
         `timeout` is the maximum total blocking time.
 
@@ -705,7 +727,7 @@ class RTM2:
 
             selected content has been seen AND listen seconds have passed
 
-        If timeout is shorter than listen, timeout takes priority.
+        If `timeout` is shorter than `listen`, `timeout` takes priority.
 
         All results obtained while waiting are accumulated and returned, including
         non-matching intermediate updates.
@@ -830,7 +852,7 @@ class RTM2:
             raw_data=np.concatenate(raw_data) if raw_data else np.empty((0, 0)),
             error=error,
         )
-
+    
 
 class RTM2Reader:
     """

@@ -6,6 +6,12 @@ The source code in this repository is licensed under the Apache License 2.0. Tha
 
 Forks and derived works are welcome under the license terms, but modified versions must not be presented as the official vendor-supported package unless they are actually distributed by Tensor Instruments.
 
+## Version
+
+Current version: `1.1.0`
+
+This version adds `read_until()`, declarative command handling, improved reply parsing, cleaner acknowledgement handling, and updated client examples.
+
 ### Repository contents
 
 

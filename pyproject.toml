@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rtm2"
+version = "1.2.0"
+description = "Python client library for the RTM2 instrument"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+    { name = "Tensor Instruments / HZDR Innovation GmbH" }
+]
+dependencies = [
+    "numpy>=1.23"
+]
+keywords = [
+    "RTM2",
+    "instrument-control",
+    "measurement",
+    "TCP"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
+
+[project.optional-dependencies]
+examples = [
+    "matplotlib>=3.7"
+]
+dev = [
+    "build>=1.2",
+    "twine>=5.0"
+]
+
+[project.urls]
+Homepage = "https://www.tensorinstruments.com"
+Repository = "https://github.com/hzdrinno/rtm2-python"
+Issues = "https://github.com/hzdrinno/rtm2-python/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["rtm2*"]
+
+[tool.setuptools.package-data]
+rtm2 = ["*.pyi", "py.typed"]

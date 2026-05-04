@@ -1,5 +1,4 @@
 import time
-import logging
 import queue
 import threading
 import matplotlib.pyplot as plt
@@ -20,14 +19,9 @@ rtm.read_until() directly anymore. All received replies should be consumed
 from reader.results.
 """
 
-# Optional: Configure logging to see INFO messages such as connection status.
-# This is useful during initial familiarization because most non-fatal command
-# errors are logged rather than raised as exceptions.
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-
-# Define connection parameters. HOST may be an IP address, hostname, or serial
-# number if the library/device setup supports that form.
+# Define connection parameters. HOST may be an IP address or DNS name
+# The RTM2 tries to use its serial number as a DNS name by default, e.g. `RTM2-509`
 # If the IP is unknown, consider running Discover() from rtm2.
 HOST = "169.254.178.185"  # or 'www.MyLab.com' if port-forwarded to the RTM2
 PORT = 6340
@@ -55,8 +49,15 @@ def command_input_loop(rtm: RTM2, stop_event: threading.Event, write_lock: threa
             stop_event.set()
             break
 
-        with write_lock:
-            rtm.write(cmd)
+        try:
+            with write_lock:
+                rtm.write(cmd)
+        except ValueError as exc:
+            print(f"[RTM2] Command rejected: {exc}")
+        except ConnectionError as exc:
+            print(f"[RTM2] Connection failed: {exc}")
+            stop_event.set()
+            break
 
 
 def main():
@@ -69,9 +70,9 @@ def main():
     fig = None
 
     try:
-        # 2. Establish the TCP connection, deplete previous data and start the reader thread.
+        # 2. Establish the TCP connection, clear previous data in the RTM2 buffer and start the reader thread.
         rtm.connect()
-        rtm.read_until("data", send="newd")
+        rtm.read_until("cldt", send="cldt")
         reader.start()
 
         # 3. Start a small command prompt thread for interactive writes.

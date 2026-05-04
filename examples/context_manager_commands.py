@@ -1,4 +1,3 @@
-import logging
 from rtm2 import RTM2
 
 """
@@ -20,18 +19,13 @@ For longer-running applications, see the long-lived connection example or the
 threaded reader example.
 """
 
-# Optional: Configure logging to see INFO messages such as connection status.
-# This is useful during initial familiarization because most non-fatal command
-# errors are logged rather than raised as exceptions.
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-
-# Define connection parameters. HOST may be an IP address, hostname, or serial
-# number if the library/device setup supports that form.
+# Define connection parameters. HOST may be an IP address or DNS name
+# The RTM2 tries to use its serial number as a DNS name by default, e.g. `RTM2-509`
 # If the IP is unknown, consider running Discover() from rtm2.
 HOST = "169.254.178.185"  # or 'www.MyLab.com' if port-forwarded to the RTM2
 PORT = 6340
-TIMEOUT = 0.2
+TIMEOUT = 0.2  # TCP connection and socket read timeout for this session
 
 
 def print_reply(reply, title: str):
@@ -90,6 +84,10 @@ def main():
 
         reply = rtm.read_until("data", listen=0.1)
         print_reply(reply, "Reply after clustered writes:")
+
+        # 7. Single send() calls can be encapsulated within read_until().
+        reply = rtm.read_until("vodc", send=("vodc", 0.06), listen=0.1)
+        print_reply(reply, "Reply after send() encapsulated in read_until():")
 
 
 if __name__ == "__main__":

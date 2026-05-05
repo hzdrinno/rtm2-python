@@ -1,4 +1,4 @@
-### v1.2.1
+### v1.2.2
 
 - Added `CHANGELOG.md` and removed changes from `README.md`.
 - Fixed `Discover()` quickstart example in the Readme.

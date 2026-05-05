@@ -30,6 +30,7 @@ The library also contains helper functions intended for users:
 `read()` or `read_until()` on the same `RTM2` instance anymore, but instead consume `RTM2Reader.results`.
 """
 
+from importlib.metadata import PackageNotFoundError, version
 import socket
 import struct
 import select
@@ -40,7 +41,10 @@ import threading    # for the optional RTM2Reader thread
 import queue        # for the optional RTM2Reader thread output
 
 
-__version__ = "1.2.0"
+try:
+    __version__ = version("rtm2")
+except PackageNotFoundError:
+    __version__ = "0+unknown"
 
 
 @dataclass
@@ -325,7 +329,11 @@ def Discover(
                 continue
 
             if b"RTM2" in payload:
-                found[sender[0]] = payload.decode("ascii", errors="replace")
+                host = sender[0]
+                message = payload.decode("ascii", errors="replace")
+                found[host] = message
+                if verbose:
+                    print(f"RTM2 found at {host}: {message}")
 
 
 

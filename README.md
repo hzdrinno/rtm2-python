@@ -7,22 +7,11 @@ The source code in this repository is licensed under the Apache License 2.0. Tha
 Forks and derived works are welcome under the license terms, but modified versions must not be presented as the official vendor-supported package unless they are actually distributed by Tensor Instruments.
 
 
-## Version and Installation
+## Installation
 
-Current version: `1.2.0`
 ```bash
-pip install git+https://github.com/hzdrinno/rtm2-python.git@v1.2.0
+pip install git+https://github.com/hzdrinno/rtm2-python.git@v1.2.1
 ```
-Main changes in this release:
-- Packaged as a `src/rtm2/` Python package with generated type stubs.
-- Added `pyproject.toml` packaging metadata.
-- Updated TCP connection handling for IPv4/IPv6 hostname support.
-- Removed `logging` from the library. 
-- Tightened command error handling: malformed commands and parameters now raise exceptions.
-- Reworked read-buffer draining to avoid transient non-blocking socket mode.
-- TCP timeout is now set once during instantiation. Removed `rtm.timeout` public property.
-- Improved `Discover()`: finds several RTMs and uses `psutil` for adapter-specific efforts
-
 
 ### Requirements
 - Python 3.10+
@@ -39,7 +28,7 @@ rtm = RTM2("169.254.178.185", 6340, timeout=0.5)
 try:
     rtm.connect()
 
-    reply = rtm.read_until("updates", send="gass")
+    reply = rtm.read_until("updates", send="gass", listen=0.2)
     print(rtm.get_state())
 
     reply = rtm.read_until("data", send="newd")
@@ -53,11 +42,11 @@ If the RTM2 IP or DNS name are unknown, `Discover()` can be helpful:
 from rtm2 import Discover
 
 device = Discover(timeout=12.0, verbose=True)
-if device is None:
+if not devices:
     raise RuntimeError("No RTM2 broadcast received.")
 
-message, host = device
-print(f"Found RTM2 at {host}: {message}")
+for host, message in devices.items():
+    print(f"Found RTM2 at {host}: {message}")
 ```
 `Discover()` works without additional dependencies, but adapter-specific broadcast targeting uses the optional `psutil` package when available.
 

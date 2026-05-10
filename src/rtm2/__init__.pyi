@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, overload
 import queue
-import threading
 import socket
 import numpy as np
 
@@ -139,9 +138,10 @@ class _CmdFacade:
 def SwitState(DRVn: list, DRVp: list, SNSn: list, SNSp: list) -> int: ...
 def Discover(
     timeout: float = 12.0,
-    primer_addr: str | None = None,
+    primer_addrs: list[str] | None = None,
     primer_port: int = 61556,
-) -> tuple[str, str] | None: ...
+    verbose: bool = False,
+) -> dict[str, str]: ...
 
 class RTM2:
     host: str
@@ -168,7 +168,7 @@ class RTM2:
 
 class RTM2Reader:
     rtm: RTM2
-    results: queue.Queue[Any]
+    results: queue.Queue[ReadResult | Exception]
     def __init__(self, rtm: RTM2) -> None: ...
     def start(self) -> None: ...
     def stop(self, timeout: float | None = 2.0) -> None: ...

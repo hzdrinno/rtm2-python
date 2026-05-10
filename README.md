@@ -10,7 +10,7 @@ Forks and derived works are welcome under the license terms, but modified versio
 ## Installation
 
 ```bash
-pip install git+https://github.com/hzdrinno/rtm2-python.git@v1.2.2
+pip install git+https://github.com/hzdrinno/rtm2-python.git@v1.2.3
 ```
 
 ### Requirements

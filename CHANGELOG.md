@@ -1,3 +1,7 @@
+### v1.2.3
+
+- Fixed type stubs for the `Discover()` function.
+
 ### v1.2.2
 
 - Added `CHANGELOG.md` and removed changes from `README.md`.

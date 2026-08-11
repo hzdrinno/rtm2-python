@@ -74,11 +74,13 @@ def _command_stub(cmd: str, cmd_def: dict) -> list[str]:
         lines.append(f"    def {name}(self, *args: {typ}) -> None: ...")
         return lines
 
-    if fmt == ">dd":
+    if fmt in {">dd", ">ii"}:
+        arg0_type = _FIELD_TYPES[fields[0]]
+        arg1_type = _FIELD_TYPES[fields[1]]
         lines.append("    @overload")
-        lines.append(f"    def {name}(self, arg0: float) -> None: ...")
+        lines.append(f"    def {name}(self, arg0: {arg0_type}) -> None: ...")
         lines.append("    @overload")
-        lines.append(f"    def {name}(self, arg0: float, arg1: float) -> None: ...")
+        lines.append(f"    def {name}(self, arg0: {arg0_type}, arg1: {arg1_type}) -> None: ...")
         return lines
 
     types = [_FIELD_TYPES[field] for field in fields]

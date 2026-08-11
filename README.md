@@ -1,16 +1,20 @@
 # Official Tensormeter RTM2 Python vendor support package
 
+[![Python CI](https://github.com/hzdrinno/rtm2-python/actions/workflows/ci.yml/badge.svg)](https://github.com/hzdrinno/rtm2-python/actions/workflows/ci.yml)
+
 This repository contains the official Python support package for the Tensormeter RTM2 from Tensor Instruments (a division of HZDR Innovation GmbH).
 
 The source code in this repository is licensed under the Apache License 2.0. That license does not grant permission to use our company name, product names, logos, or other branding in ways that imply endorsement, affiliation, or official vendor status.
 
 Forks and derived works are welcome under the license terms, but modified versions must not be presented as the official vendor-supported package unless they are actually distributed by Tensor Instruments.
 
+[Command reference](docs/commands.md) | [Changelog](CHANGELOG.md)
+
 
 ## Installation
 
 ```bash
-pip install git+https://github.com/hzdrinno/rtm2-python.git@v1.2.3
+pip install git+https://github.com/hzdrinno/rtm2-python.git@v1.3.0
 ```
 
 ### Requirements
@@ -41,7 +45,7 @@ If the RTM2 IP or DNS name are unknown, `Discover()` can be helpful:
 ```python
 from rtm2 import Discover
 
-device = Discover(timeout=12.0, verbose=True)
+devices = Discover(timeout=12.0, verbose=True)
 if not devices:
     raise RuntimeError("No RTM2 broadcast received.")
 
@@ -62,6 +66,8 @@ Please review the **Repository contents** section below for an overview of furth
 | `src/rtm2/__init__.py` | Main RTM2 Python client library |
 | `src/rtm2/__init__.pyi` | Generated type stub for IDE autocomplete and static analysis |
 | `src/rtm2/py.typed` | Marker file for typed package distribution |
+| `docs/commands.md` | Supported RTM2 commands and their Python arguments |
+| `tests/` | Protocol and packaging regression tests; run with `python -m unittest discover -s tests -v` |
 | `tools/generate_rtm2_pyi.py` | Generates the type stub from the RTM2 command registry |
 | `examples/basic_connection_read_until.py` | Basic long-lived connection pattern: instantiate, connect, write commands, use `read_until()`, and disconnect explicitly |
 | `examples/context_manager_commands.py` | Short-script pattern using `with RTM2(...) as rtm`; demonstrates `send()`, `write()`, `.cmd.*()`, and `read_until()` |

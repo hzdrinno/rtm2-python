@@ -1,3 +1,9 @@
+### v1.3.0
+
+- Updated `rawd` to always encode a row count and an `int32` decimation factor, defaulting the decimation factor to `1` when omitted.
+- Added protocol regression tests and continuous integration for supported Python versions.
+- Added a command reference and linked documentation from the README.
+
 ### v1.2.3
 
 - Fixed type stubs for the `Discover()` function.

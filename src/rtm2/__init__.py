@@ -97,6 +97,7 @@ def _encode_payload(fmt, args: tuple) -> bytes:
         ""          -> empty payload, requires no args
         ">d", ">i"  -> regular struct formats
         ">dd"       -> two doubles; if one arg is supplied, the second becomes 0.0
+        ">ii"       -> two int32s; if one arg is supplied, the second becomes 1
         [">I"]      -> counted sequence; count is sent as >i followed by all values
     """
     if fmt == "":
@@ -116,6 +117,11 @@ def _encode_payload(fmt, args: tuple) -> bytes:
     # optional for user convenience and defaults to 0.0, matching firmware behavior.
     if fmt == ">dd" and len(args) == 1:
         args = (args[0], 0.0)
+
+    # Raw ADC data requests include a decimation factor. Preserve the one-argument
+    # convenience form while always sending both int32 values to the device.
+    if fmt == ">ii" and len(args) == 1:
+        args = (args[0], 1)
 
     if len(args) != len(fields):
         raise ValueError(f"Expected {len(fields)} arguments for {fmt}, got {len(args)}.")
@@ -419,7 +425,7 @@ class RTM2:
         # Data commands
         "newd": {"args":  "",     "reply": "data", "type": "data",     "doc": "Request all new data rows, i.e. previously unsent rows."},
         "alld": {"args":  "",     "reply": "data", "type": "data",     "doc": "Request all data rows."},
-        "rawd": {"args":  ">i",   "reply": "data", "type": "raw_data", "doc": "Request a number of rows of raw ADC samples."},
+        "rawd": {"args":  ">ii",  "reply": "data", "type": "raw_data", "doc": "Request raw ADC samples. Optional 2nd argument: decimation factor (default 1)."},
     }
 
     def __init__(self, host: str, port: int, timeout: float = 1.0):

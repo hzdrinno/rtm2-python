@@ -8,7 +8,7 @@ The source code in this repository is licensed under the Apache License 2.0. Tha
 
 Forks and derived works are welcome under the license terms, but modified versions must not be presented as the official vendor-supported package unless they are actually distributed by Tensor Instruments.
 
-[Command reference](docs/commands.md) | [Changelog](CHANGELOG.md)
+[Command reference](docs/commands.md) | [Examples](docs/examples.md) | [Changelog](CHANGELOG.md)
 
 
 ## Installation
@@ -20,7 +20,7 @@ pip install git+https://github.com/hzdrinno/rtm2-python.git@v1.3.0
 ### Requirements
 - Python 3.10+
 - NumPy
-- Matplotlib only for the live-plot example
+- Matplotlib for the plotting examples
 
 
 ## Quick start
@@ -54,9 +54,8 @@ for host, message in devices.items():
 ```
 `Discover()` works without additional dependencies, but adapter-specific broadcast targeting uses the optional `psutil` package when available.
 
-For a more complete walkthrough, see `examples/basic_connection_read_until.py`.
-
-Please review the **Repository contents** section below for an overview of further examples.
+For connection patterns, live plotting, and broadband resistance noise with
+DRV-to-SNS transfer calibration to remove drive noise, see the [example guide](docs/examples.md).
 
 
 ## Repository contents
@@ -67,8 +66,7 @@ Please review the **Repository contents** section below for an overview of furth
 | `src/rtm2/__init__.pyi` | Generated type stub for IDE autocomplete and static analysis |
 | `src/rtm2/py.typed` | Marker file for typed package distribution |
 | `docs/commands.md` | Supported RTM2 commands and their Python arguments |
-| `tests/` | Protocol and packaging regression tests; run with `python -m unittest discover -s tests -v` |
+| `docs/examples.md` | Example guide: connections, live plotting, and removal of drive noise from broadband resistance-noise measurements |
+| `tests/` | Protocol, packaging, and measurement-example tests; run with `python -m unittest discover -s tests -v` |
 | `tools/generate_rtm2_pyi.py` | Generates the type stub from the RTM2 command registry |
-| `examples/basic_connection_read_until.py` | Basic long-lived connection pattern: instantiate, connect, write commands, use `read_until()`, and disconnect explicitly |
-| `examples/context_manager_commands.py` | Short-script pattern using `with RTM2(...) as rtm`; demonstrates `send()`, `write()`, `.cmd.*()`, and `read_until()` |
-| `examples/threaded_reader_live_plot.py` | Threaded application-style example with `RTM2Reader`, non-blocking main loop, live plotting, state display, and interactive command input |
+| `examples/` | Runnable examples described in the [example guide](docs/examples.md) |
